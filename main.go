@@ -3,9 +3,11 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/list"
@@ -16,37 +18,6 @@ import (
 	"github.com/fsnotify/fsnotify"
 	"github.com/xuri/excelize/v2"
 )
-
-type menuItem string
-
-func (m menuItem) Title() string       { return string(m) }
-func (m menuItem) Description() string { return "" }
-func (m menuItem) FilterValue() string { return string(m) }
-
-type itemDelegate struct{}
-
-func (d itemDelegate) Height() int                               { return 1 }
-func (d itemDelegate) Spacing() int                              { return 0 }
-func (d itemDelegate) Update(msg tea.Msg, m *list.Model) tea.Cmd { return nil }
-func (d itemDelegate) Render(w, h int, i list.Item, sel bool) string {
-	m, ok := i.(menuItem)
-	if !ok {
-		return ""
-	}
-
-	// Define base styles.
-	baseStyle := lipgloss.NewStyle().Padding(0, 1)
-	selectedStyle := baseStyle.Foreground(lipgloss.Color("205")).Bold(true)
-	dimStyle := baseStyle.Foreground(lipgloss.Color("250"))
-
-	// Render selected item with the highlight style.
-	if sel {
-		return selectedStyle.Render(m.Title())
-	}
-	return dimStyle.Render(m.Title())
-}
-
-type screen int
 
 const (
 	screenMenu screen = iota
@@ -82,7 +53,45 @@ var (
 		Italic(true).
 		Foreground(lipgloss.Color("#FFF7DB")).
 		SetString("Expenses")
+
+	titleStyle        = lipgloss.NewStyle().MarginLeft(2)
+	itemStyle         = lipgloss.NewStyle().PaddingLeft(4)
+	selectedItemStyle = lipgloss.NewStyle().PaddingLeft(2).Foreground(lipgloss.Color("170"))
+	paginationStyle   = list.DefaultStyles().PaginationStyle.PaddingLeft(4)
+	helpStyle         = list.DefaultStyles().HelpStyle.PaddingLeft(4).PaddingBottom(1)
+	quitTextStyle     = lipgloss.NewStyle().Margin(1, 0, 2, 4)
 )
+
+type menuItem string
+
+func (m menuItem) Title() string       { return string(m) }
+func (m menuItem) Description() string { return "" }
+func (m menuItem) FilterValue() string { return string(m) }
+
+type itemDelegate struct{}
+
+func (d itemDelegate) Height() int                               { return 1 }
+func (d itemDelegate) Spacing() int                              { return 0 }
+func (d itemDelegate) Update(msg tea.Msg, m *list.Model) tea.Cmd { return nil }
+func (d itemDelegate) Render(w io.Writer, m list.Model, index int, listItem list.Item) {
+	i, ok := listItem.(menuItem)
+	if !ok {
+		return
+	}
+
+	str := fmt.Sprintf("%d. %s", index+1, i)
+
+	fn := itemStyle.Render
+	if index == m.Index() {
+		fn = func(s ...string) string {
+			return selectedItemStyle.Render("> " + strings.Join(s, " "))
+		}
+	}
+
+	fmt.Fprint(w, fn(str))
+}
+
+type screen int
 
 // expenseEditedMsg now includes both an index and the updated expense.
 type expenseEditedMsg struct {
@@ -131,7 +140,7 @@ type errMsg struct{ err error }
 
 func (e errMsg) Error() string { return e.err.Error() }
 
-func initialModel() model {
+func initialModel() *model {
 	data, err := readExcelData("data.xlsx")
 	if err != nil {
 		log.Printf("Error reading Excel data: %v", err)
@@ -139,8 +148,24 @@ func initialModel() model {
 			expenses:  []Expense{},
 			stonks:    []Stonk{},
 			watchList: []WatchItem{},
+			// Ensure a default total if needed:
+			totalExpenses: 0,
 		}
 	}
+
+	// Create menu items.
+	items := []list.Item{
+		menuItem("Expenses"),
+		menuItem("Stonks"),
+		menuItem("Watchlist"),
+	}
+
+	// Create the list model. Adjust the width and height as needed.
+	l := list.New(items, itemDelegate{}, 20, 7)
+	l.Title = "Main Menu"
+	l.SetFilteringEnabled(false)
+	l.SetShowStatusBar(false)
+	l.SetShowHelp(false)
 
 	m := model{
 		currentScreen: screenMenu,
@@ -148,9 +173,10 @@ func initialModel() model {
 		stonks:        data.stonks,
 		watchList:     data.watchList,
 		totalExpenses: data.totalExpenses,
+		list:          l,
 	}
 	m.updateExpensesTable()
-	return m
+	return &m
 }
 
 // entry point
@@ -337,74 +363,94 @@ func writeExcelData(filename string,
 	return f.Save()
 }
 
-// --- Bubble Tea Init, Update, & View ---
-func (m model) Init() tea.Cmd {
+// Init --- Bubble Tea Init, Update, & View ---
+func (m *model) Init() tea.Cmd {
 	return watchExcelCmd("data.xlsx")
 }
 
-func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
+func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
 
+	// Let the list update.
+	//m.list, cmd = m.list.Update(msg)
+
+	switch msg := msg.(type) {
 	case excelDataMsg:
 		m.expenses = msg.expenses
 		m.stonks = msg.stonks
 		m.watchList = msg.watchList
 		m.totalExpenses = msg.totalExpenses
-		fmt.Printf("Received totalExpenses: %f\n", msg.totalExpenses)
-
-		// Optionally update other data here.
 		return m, watchExcelCmd("data.xlsx")
-
 	case errMsg:
 		m.err = msg.err
 		return m, watchExcelCmd("data.xlsx")
+	}
 
+	if m.currentScreen == screenMenu {
+		m.list, cmd = m.list.Update(msg)
+		switch msg := msg.(type) {
+		case tea.KeyMsg:
+			switch msg.String() {
+			case "q", "ctrl+c":
+				return m, tea.Quit
+			case "enter":
+				selected := m.list.SelectedItem().(menuItem)
+				fmt.Println("You selected:", selected)
+				switch selected {
+				case "Expenses":
+					m.currentScreen = screenExpenses
+				case "Stonks":
+					m.currentScreen = screenStonks
+				case "Watchlist":
+					m.currentScreen = screenWatchlist
+				}
+			}
+		}
+		return m, cmd
+	}
+
+	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
-		case "e": // Enter editing mode
-			if len(m.expenses) > 0 && !m.editing {
+		case "b":
+			m.currentScreen = screenMenu
+			return m, nil
+		case "e":
+			if m.currentScreen == screenExpenses && !m.editing && len(m.expenses) > 0 {
 				m.editing = true
-				// Launch edit form for the first expense for demonstration.
 				return m, m.editExpenseForm(0)
 			}
-		case "n": // Press 'n' to create a new expense.
-			if !m.editing {
+			// add stonks and watchlist later
+		case "n":
+			// 'n' to create a new expense (only in Expenses screen)
+			if m.currentScreen == screenExpenses && !m.editing {
 				m.editing = true
 				return m, m.newExpenseForm()
 			}
-		//case "1":
-		//	// For example, you might write back to Excel here.
-		//	return m, writeExcelCmd(m.expenses, m.stonks, m.watchList)
-		case "1":
-			m.currentScreen = screenExpenses
-		case "2":
-			m.currentScreen = screenStonks
-		case "3":
-			m.currentScreen = screenWatchlist
-		case "b": // go back to the main menu
-			m.currentScreen = screenMenu
 		}
-		return m, nil
-
 	case expenseEditedMsg:
-		// Update the edited expense, then exit editing mode.
+		// When an expense has been edited:
 		if msg.index == -1 {
+			// New expense added.
 			m.expenses = append(m.expenses, msg.expense)
 		} else {
+			// Update an existing expense.
 			m.expenses[msg.index] = msg.expense
 		}
 		m.updateExpensesTable()
 		m.editing = false
-		// update excel later here
-		return m, writeExcelCmd(m.expenses, m.stonks, m.watchList)
+		m.currentScreen = screenExpenses
 
-	default:
-		return m, nil
+		// Write the updated data back to Excel.
+		return m, writeExcelCmd(m.expenses, m.stonks, m.watchList)
 	}
+
+	return m, nil
 }
-func (m model) View() string {
+
+func (m *model) View() string {
 	switch m.currentScreen {
 	case screenMenu:
 		return m.viewMenu()
@@ -419,46 +465,32 @@ func (m model) View() string {
 	}
 }
 
-func (m model) viewMenu() string {
-	s := mainMenu.String()
-	s += "\n1) Expenses\n"
-	s += "2) Stonks\n"
-	s += "3) Watchlist\n"
-	s += "\nPress q to quit.\n"
-	return s
+func (m *model) viewMenu() string {
+	return m.list.View() + "\nPress q to quit.\n"
 }
 
-func (m model) viewExpenses() string {
+func (m *model) viewExpenses() string {
 	var buffer bytes.Buffer
 	buffer.WriteString("\n")
 	buffer.WriteString(editExpensesTitle.String())
 	buffer.WriteString("\n")
-
-	for _, e := range m.expenses {
-		buffer.WriteString(fmt.Sprintf("%-20s %10.2f\n", e.Name, e.Amount))
-	}
-	buffer.WriteString(fmt.Sprintf("\nTOTAL: %.4f\n", m.totalExpenses))
+	buffer.WriteString(m.expensesTable.String())
+	buffer.WriteString(fmt.Sprintf("\nTotal: %.4f\n", m.totalExpenses))
 	buffer.WriteString("\nPress 'b' to go back.\n")
 	buffer.WriteString("\nPress 'e' to edit.\n")
+	buffer.WriteString("\nPress 'n' to insert new expense.\n")
+
 	return buffer.String()
 }
 
-func sumExpenses(expenses []Expense) float64 {
-	var total float64
-	for _, e := range expenses {
-		total += e.Amount
-	}
-	return total
-}
-
-func (m model) viewStonks() string {
+func (m *model) viewStonks() string {
 	s := "=== STONKS ===\n"
 	// ...
 	s += "\nPress 'b' to go back.\n"
 	return s
 }
 
-func (m model) viewWatchlist() string {
+func (m *model) viewWatchlist() string {
 	s := "=== WATCHLIST ===\n"
 	// ...
 	s += "\nPress 'b' to go back.\n"
@@ -490,7 +522,6 @@ func (m *model) updateExpensesTable() {
 			if row == ltable.HeaderRow {
 				return headerStyle
 			}
-			// Alternate row colors.
 			if row%2 == 0 {
 				return rowStyle.Foreground(lipgloss.Color("245"))
 			}
@@ -523,6 +554,7 @@ func (m *model) editExpenseForm(index int) tea.Cmd {
 			return errMsg{err}
 		}
 		updated := Expense{Name: newName, Amount: amt}
+
 		return expenseEditedMsg{index: index, expense: updated}
 	}
 }
