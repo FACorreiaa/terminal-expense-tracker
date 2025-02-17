@@ -134,6 +134,7 @@ type model struct {
 	currentScreen screen
 	totalExpenses float64
 	list          list.Model
+	selectedRow   int
 }
 
 type errMsg struct{ err error }
@@ -174,6 +175,7 @@ func initialModel() *model {
 		watchList:     data.watchList,
 		totalExpenses: data.totalExpenses,
 		list:          l,
+		editing:       false,
 	}
 	m.updateExpensesTable()
 	return &m
@@ -414,13 +416,24 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
+		case "up":
+			if m.selectedRow > 0 {
+				m.selectedRow--
+				m.updateExpensesTable()
+			}
+		case "down":
+			if m.selectedRow < len(m.expenses)-1 {
+				m.selectedRow++
+				m.updateExpensesTable()
+
+			}
 		case "b":
 			m.currentScreen = screenMenu
 			return m, nil
 		case "e":
 			if m.currentScreen == screenExpenses && !m.editing && len(m.expenses) > 0 {
 				m.editing = true
-				return m, m.editExpenseForm(0)
+				return m, m.editExpenseForm(m.selectedRow)
 			}
 			// add stonks and watchlist later
 		case "n":
@@ -475,7 +488,18 @@ func (m *model) viewExpenses() string {
 	buffer.WriteString(editExpensesTitle.String())
 	buffer.WriteString("\n")
 	buffer.WriteString(m.expensesTable.String())
-	buffer.WriteString(fmt.Sprintf("\nTotal: %.4f\n", m.totalExpenses))
+	//for i, exp := range m.expenses {
+	//	// If this row is selected, apply a highlight style.
+	//	row := fmt.Sprintf("%-4d %-20s %10.2f\n", i+1, exp.Name, exp.Amount)
+	//	if i == m.selectedRow {
+	//		highlight := lipgloss.NewStyle().Background(lipgloss.Color("57")).Foreground(lipgloss.Color("229")).Bold(true)
+	//		row = highlight.Render(row)
+	//	}
+	//	buffer.WriteString(row)
+	//}
+	//buffer.WriteString(fmt.Sprintf("\nTotal: %.4f\n", m.totalExpenses))
+
+	buffer.WriteString("\nUse ↑/↓ to move, 'e' to edit the selected row, 'n' to insert a new expense, 'q' to quit.\n")
 	buffer.WriteString("\nPress 'b' to go back.\n")
 	buffer.WriteString("\nPress 'e' to edit.\n")
 	buffer.WriteString("\nPress 'n' to insert new expense.\n")
@@ -502,16 +526,24 @@ func (m *model) updateExpensesTable() {
 
 	var data [][]string
 	for i, e := range m.expenses {
+		// i+1 is row number for display
 		row := []string{strconv.Itoa(i + 1), e.Name, fmt.Sprintf("%.2f", e.Amount)}
 		data = append(data, row)
 	}
 
-	// Change style later
+	// Base styles
 	re := lipgloss.NewRenderer(os.Stdout)
 	baseStyle := re.NewStyle().Padding(0, 1)
 	headerStyle := baseStyle.Foreground(lipgloss.Color("252")).Bold(true)
 	rowStyle := baseStyle.Foreground(lipgloss.Color("252"))
 
+	// Define a highlight style for the selected row
+	highlightStyle := baseStyle.
+		Background(lipgloss.Color("57")).
+		Foreground(lipgloss.Color("229")).
+		Bold(true)
+
+	// Build the table
 	t := ltable.New().
 		Border(lipgloss.NormalBorder()).
 		BorderStyle(re.NewStyle().Foreground(lipgloss.Color("238"))).
@@ -519,10 +551,19 @@ func (m *model) updateExpensesTable() {
 		Width(80).
 		Rows(data...).
 		StyleFunc(func(row, col int) lipgloss.Style {
+			// row == 0 is the header row
 			if row == ltable.HeaderRow {
 				return headerStyle
 			}
+			// We want to highlight if row == m.selectedRow + 1 (because row 1 in the table is your first data row).
+			// So if the user’s selectedRow is 0, that’s table row 1.
+			if row == m.selectedRow {
+				return highlightStyle
+			}
+
+			// Else do normal styling
 			if row%2 == 0 {
+				// even data row
 				return rowStyle.Foreground(lipgloss.Color("245"))
 			}
 			return rowStyle
