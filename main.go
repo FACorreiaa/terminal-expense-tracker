@@ -228,7 +228,6 @@ func readExcelData(filename string) (excelDataMsg, error) {
 	}
 	defer f.Close()
 
-	// read each sheet
 	expenses, err := readExpenses(f)
 	if err != nil {
 		return excelDataMsg{}, err
@@ -244,7 +243,6 @@ func readExcelData(filename string) (excelDataMsg, error) {
 
 	f.SetCellFormula("Expenses", "D2", "=SUM(B3:B9)")
 	computed, _ := f.CalcCellValue("Expenses", "D2")
-	// Convert to float64
 	total, _ := strconv.ParseFloat(computed, 64)
 
 	return excelDataMsg{
@@ -255,7 +253,6 @@ func readExcelData(filename string) (excelDataMsg, error) {
 	}, nil
 }
 
-// --- Interactive Editing with Huh ---
 func readExpenses(f *excelize.File) ([]Expense, error) {
 	rows, err := f.GetRows("Expenses")
 	if err != nil {
@@ -313,14 +310,11 @@ func readWatchList(f *excelize.File) ([]WatchItem, error) {
 
 func writeExcelCmd(exp []Expense, st []Stonk, wl []WatchItem) tea.Cmd {
 	return func() tea.Msg {
-		// do the actual write
 		err := writeExcelData("data.xlsx", exp, st, wl)
 		if err != nil {
 			return errMsg{err}
 		}
-		// Wait a moment so fsnotify sees the file change
 		time.Sleep(500 * time.Millisecond)
-		// Then read fresh data again
 		data, err := readExcelData("data.xlsx")
 		if err != nil {
 			return errMsg{err}
@@ -372,9 +366,6 @@ func (m *model) Init() tea.Cmd {
 
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
-
-	// Let the list update.
-	//m.list, cmd = m.list.Update(msg)
 
 	switch msg := msg.(type) {
 	case excelDataMsg:
@@ -435,28 +426,22 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.editing = true
 				return m, m.editExpenseForm(m.selectedRow)
 			}
-			// add stonks and watchlist later
 		case "n":
-			// 'n' to create a new expense (only in Expenses screen)
 			if m.currentScreen == screenExpenses && !m.editing {
 				m.editing = true
 				return m, m.newExpenseForm()
 			}
 		}
 	case expenseEditedMsg:
-		// When an expense has been edited:
 		if msg.index == -1 {
-			// New expense added.
 			m.expenses = append(m.expenses, msg.expense)
 		} else {
-			// Update an existing expense.
 			m.expenses[msg.index] = msg.expense
 		}
 		m.updateExpensesTable()
 		m.editing = false
 		m.currentScreen = screenExpenses
 
-		// Write the updated data back to Excel.
 		return m, writeExcelCmd(m.expenses, m.stonks, m.watchList)
 	}
 
@@ -488,16 +473,6 @@ func (m *model) viewExpenses() string {
 	buffer.WriteString(editExpensesTitle.String())
 	buffer.WriteString("\n")
 	buffer.WriteString(m.expensesTable.String())
-	//for i, exp := range m.expenses {
-	//	// If this row is selected, apply a highlight style.
-	//	row := fmt.Sprintf("%-4d %-20s %10.2f\n", i+1, exp.Name, exp.Amount)
-	//	if i == m.selectedRow {
-	//		highlight := lipgloss.NewStyle().Background(lipgloss.Color("57")).Foreground(lipgloss.Color("229")).Bold(true)
-	//		row = highlight.Render(row)
-	//	}
-	//	buffer.WriteString(row)
-	//}
-	//buffer.WriteString(fmt.Sprintf("\nTotal: %.4f\n", m.totalExpenses))
 
 	buffer.WriteString("\nUse ↑/↓ to move, 'e' to edit the selected row, 'n' to insert a new expense, 'q' to quit.\n")
 	buffer.WriteString("\nPress 'b' to go back.\n")
@@ -551,19 +526,14 @@ func (m *model) updateExpensesTable() {
 		Width(80).
 		Rows(data...).
 		StyleFunc(func(row, col int) lipgloss.Style {
-			// row == 0 is the header row
 			if row == ltable.HeaderRow {
 				return headerStyle
 			}
-			// We want to highlight if row == m.selectedRow + 1 (because row 1 in the table is your first data row).
-			// So if the user’s selectedRow is 0, that’s table row 1.
 			if row == m.selectedRow {
 				return highlightStyle
 			}
 
-			// Else do normal styling
 			if row%2 == 0 {
-				// even data row
 				return rowStyle.Foreground(lipgloss.Color("245"))
 			}
 			return rowStyle
@@ -573,11 +543,9 @@ func (m *model) updateExpensesTable() {
 }
 
 func (m *model) editExpenseForm(index int) tea.Cmd {
-	// Pre-fill form fields with the current expense data.
 	var newName string = m.expenses[index].Name
 	var newAmount string = fmt.Sprintf("%.2f", m.expenses[index].Amount)
 
-	// Wrap inputs in a group (required by Huh).
 	form := huh.NewForm(
 		huh.NewGroup(
 			huh.NewInput().Title("Expense Name").Value(&newName),
@@ -589,7 +557,6 @@ func (m *model) editExpenseForm(index int) tea.Cmd {
 		if err := form.Run(); err != nil {
 			return errMsg{err}
 		}
-		// Convert the amount to float64.
 		amt, err := strconv.ParseFloat(newAmount, 64)
 		if err != nil {
 			return errMsg{err}
@@ -601,11 +568,9 @@ func (m *model) editExpenseForm(index int) tea.Cmd {
 }
 
 func (m *model) newExpenseForm() tea.Cmd {
-	// Default empty values for a new expense.
 	var newName string = ""
 	var newAmount string = "0.00"
 
-	// Wrap inputs in a group using Huh.
 	form := huh.NewForm(
 		huh.NewGroup(
 			huh.NewInput().Title("Expense Name").Value(&newName),
@@ -617,13 +582,11 @@ func (m *model) newExpenseForm() tea.Cmd {
 		if err := form.Run(); err != nil {
 			return errMsg{err}
 		}
-		// Convert the amount to float64.
 		amt, err := strconv.ParseFloat(newAmount, 64)
 		if err != nil {
 			return errMsg{err}
 		}
 		updated := Expense{Name: newName, Amount: amt}
-		// Use index -1 to signal this is a new expense.
 		return expenseEditedMsg{index: -1, expense: updated}
 	}
 }
