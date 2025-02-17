@@ -1,12 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"log"
 	"os"
 	"strconv"
 	"time"
 
+	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
@@ -14,6 +16,35 @@ import (
 	"github.com/fsnotify/fsnotify"
 	"github.com/xuri/excelize/v2"
 )
+
+type menuItem string
+
+func (m menuItem) Title() string       { return string(m) }
+func (m menuItem) Description() string { return "" }
+func (m menuItem) FilterValue() string { return string(m) }
+
+type itemDelegate struct{}
+
+func (d itemDelegate) Height() int                               { return 1 }
+func (d itemDelegate) Spacing() int                              { return 0 }
+func (d itemDelegate) Update(msg tea.Msg, m *list.Model) tea.Cmd { return nil }
+func (d itemDelegate) Render(w, h int, i list.Item, sel bool) string {
+	m, ok := i.(menuItem)
+	if !ok {
+		return ""
+	}
+
+	// Define base styles.
+	baseStyle := lipgloss.NewStyle().Padding(0, 1)
+	selectedStyle := baseStyle.Foreground(lipgloss.Color("205")).Bold(true)
+	dimStyle := baseStyle.Foreground(lipgloss.Color("250"))
+
+	// Render selected item with the highlight style.
+	if sel {
+		return selectedStyle.Render(m.Title())
+	}
+	return dimStyle.Render(m.Title())
+}
 
 type screen int
 
@@ -41,7 +72,7 @@ var (
 		Bold(true).
 		Italic(true).
 		Foreground(lipgloss.Color("#FFF7DB")).
-		SetString("Edit Expenses Title")
+		SetString("Expenses")
 
 	expansesMenuTitle = lipgloss.NewStyle().
 		MarginLeft(1).
@@ -93,6 +124,7 @@ type model struct {
 	editing       bool
 	currentScreen screen
 	totalExpenses float64
+	list          list.Model
 }
 
 type errMsg struct{ err error }
@@ -184,7 +216,6 @@ func readExcelData(filename string) (excelDataMsg, error) {
 
 	f.SetCellFormula("Expenses", "D2", "=SUM(B3:B9)")
 	computed, _ := f.CalcCellValue("Expenses", "D2")
-	fmt.Printf("Raw computed string: %q\n", computed)
 	// Convert to float64
 	total, _ := strconv.ParseFloat(computed, 64)
 
@@ -398,15 +429,18 @@ func (m model) viewMenu() string {
 }
 
 func (m model) viewExpenses() string {
-	s := "=== EXPENSES ===\n"
+	var buffer bytes.Buffer
+	buffer.WriteString("\n")
+	buffer.WriteString(editExpensesTitle.String())
+	buffer.WriteString("\n")
+
 	for _, e := range m.expenses {
-		s += fmt.Sprintf("%-20s %10.2f\n", e.Name, e.Amount)
+		buffer.WriteString(fmt.Sprintf("%-20s %10.2f\n", e.Name, e.Amount))
 	}
-	fmt.Printf("LALLALALALA %.4f", m.totalExpenses)
-	s += fmt.Sprintf("\nTOTAL: %.4f\n", m.totalExpenses)
-	s += "\nPress 'b' to go back.\n"
-	s += "\nPress 'e' to edit.\n"
-	return s
+	buffer.WriteString(fmt.Sprintf("\nTOTAL: %.4f\n", m.totalExpenses))
+	buffer.WriteString("\nPress 'b' to go back.\n")
+	buffer.WriteString("\nPress 'e' to edit.\n")
+	return buffer.String()
 }
 
 func sumExpenses(expenses []Expense) float64 {
